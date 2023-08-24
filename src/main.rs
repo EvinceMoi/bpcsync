@@ -19,7 +19,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("failed to create sink"))?;
 
     let source = BPCWave::new();
-    sink.append(source.amplify(2.));
+    sink.append(source.amplify(1.));
 
     sink.play();
     rx.recv()?;

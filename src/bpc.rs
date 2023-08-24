@@ -172,7 +172,7 @@ impl BPC {
 }
 
 const BPC_FREQ: u32 = 68500;
-const SAMPLE_RATE: u32 = 48000;
+const SAMPLE_RATE: u32 = 44100; //48000;
 
 #[derive(Clone, Debug)]
 pub struct BPCWave {
@@ -193,13 +193,15 @@ impl Iterator for BPCWave {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        let v = if self.bpc.pulse() { 1. } else { 0. };
-
         let fc = BPC_FREQ / 5; // normally speakers only produce sound frequency under 20khz
 
         self.num_samples = self.num_samples.wrapping_add(1);
         let value = 2.0 * PI * fc as f32 * self.num_samples as f32 / SAMPLE_RATE as f32;
-        Some(value.sin() * v)
+        if self.bpc.pulse() {
+            Some(value.sin().signum())
+        } else {
+            Some(0.)
+        }
     }
 }
 
