@@ -1,10 +1,6 @@
 mod bpc;
 
-
 use std::sync::mpsc::channel;
-
-
-
 use anyhow::{Context, Result};
 use bpc::BPCWave;
 use ctrlc;
