@@ -1,11 +1,23 @@
-use chrono::{Datelike, Timelike, Utc, FixedOffset, DateTime};
+use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc};
 use rodio::Source;
-use std::f32::consts::PI;
-
-#[derive(Clone, Debug)]
-pub struct BPC { }
+use std::{
+    f32::consts::PI,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::Duration,
+};
 
 type ZonedDateTime = DateTime<FixedOffset>;
+pub fn cst() -> ZonedDateTime {
+    // china standard time
+    Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())
+}
+
+pub struct BPC {}
+
 impl BPC {
     pub fn new() -> Self {
         Self {}
@@ -14,25 +26,15 @@ impl BPC {
     // signal_width in ms
     pub fn signal_width(&self, t: ZonedDateTime) -> Option<u32> {
         match self.code(t) {
-            Some(0b00) => { Some(100) }
-            Some(0b01) => { Some(200) }
-            Some(0b10) => { Some(300) }
-            Some(0b11) => { Some(400) }
-            None => { None }
-            _ => { unreachable!() }
+            Some(0b00) => Some(100),
+            Some(0b01) => Some(200),
+            Some(0b10) => Some(300),
+            Some(0b11) => Some(400),
+            None => None,
+            _ => {
+                unreachable!()
+            }
         }
-    }
-
-    pub fn pulse(&self) -> bool {
-        let now = Self::cst();
-        let millis = now.timestamp_subsec_millis();
-        let sw = self.signal_width(now);
-        sw.map_or(true, |v| { millis > v })
-    }
-
-    fn cst() -> ZonedDateTime {
-        // china standard time
-        Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap())
     }
 
     fn code(&self, now: ZonedDateTime) -> Option<u8> {
@@ -46,22 +48,19 @@ impl BPC {
 
         let fragment = second % 20;
         match fragment {
-            0 => { // empty 
+            0 => {
+                // empty
                 None
             }
             1 => {
                 // seconds, 01 / 21 / 41
                 let v: u32 = match second {
-                    1 => {
-                        0
+                    1 => 0,
+                    21 => 1,
+                    41 => 2,
+                    _ => {
+                        unreachable!("unreachable seconds")
                     }
-                    21 => {
-                        1
-                    }
-                    41 => {
-                        2
-                    }
-                    _ => { unreachable!("unreachable seconds") }
                 };
                 Some(v as u8)
             }
@@ -109,12 +108,17 @@ impl BPC {
                 let mut v: u8 = if pm { 0b10 } else { 0b00 };
                 // second range: 0 - 59
                 let s = match second {
-                    1..=20 => { 0b00 }
-                    21..=40 => { 0b01 }
-                    41..=59 => { 0b11 }
-                    _ => { unreachable!() }
+                    1..=20 => 0b00,
+                    21..=40 => 0b01,
+                    41..=59 => 0b11,
+                    _ => {
+                        unreachable!()
+                    }
                 };
-                let c = vec![s, hour, minute, weekday].into_iter().reduce(|acc, e| acc + e.count_ones()).unwrap();
+                let c = vec![s, hour, minute, weekday]
+                    .into_iter()
+                    .reduce(|acc, e| acc + e.count_ones())
+                    .unwrap();
                 v |= if c % 2 == 0 { 0b0 } else { 0b1 };
                 Some(v)
             }
@@ -162,11 +166,16 @@ impl BPC {
                 // check & year highest bit
                 let year_highest = (year >> 6) & 0b1;
                 let mut v = year_highest << 1;
-                let c = vec![day, month, (year & 0b111111) as u32].into_iter().reduce(|acc, e| acc + e.count_ones()).unwrap();
+                let c = vec![day, month, (year & 0b111111) as u32]
+                    .into_iter()
+                    .reduce(|acc, e| acc + e.count_ones())
+                    .unwrap();
                 v |= if c % 2 == 0 { 0b0 } else { 0b1 };
                 Some(v as u8)
             }
-            _ => { unreachable!("unreachable fragment") }
+            _ => {
+                unreachable!("unreachable fragment")
+            }
         }
     }
 }
@@ -174,18 +183,72 @@ impl BPC {
 const BPC_FREQ: u32 = 68500;
 const SAMPLE_RATE: u32 = 44100; //48000;
 
-#[derive(Clone, Debug)]
-pub struct BPCWave {
+struct BPCWaveInner {
     bpc: BPC,
     num_samples: usize,
+    pivot: usize,
+    updating: Arc<AtomicBool>,
+}
+
+impl BPCWaveInner {
+    pub fn new() -> Self {
+        Self {
+            bpc: BPC::new(),
+            num_samples: 0,
+            pivot: 0,
+            updating: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn update(&mut self, t: ZonedDateTime) {
+        self.updating.store(true, Ordering::SeqCst);
+        self.pivot = (self.bpc.signal_width(t).unwrap_or(0) * SAMPLE_RATE / 1000) as usize;
+        self.num_samples = 0;
+        self.updating.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Iterator for BPCWaveInner {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.updating.load(Ordering::SeqCst) {
+            return Some(1.);
+        }
+
+        self.num_samples += 1;
+
+        let fc = BPC_FREQ / 5; // normally speakers only produce sound frequency under 20khz
+        let value = 2.0 * PI * fc as f32 * self.num_samples as f32 / SAMPLE_RATE as f32;
+        if self.num_samples >= self.pivot {
+            Some(value.sin())
+        } else {
+            Some(0.)
+        }
+    }
+}
+
+pub struct BPCWave {
+    inner: Arc<Mutex<BPCWaveInner>>,
 }
 
 impl BPCWave {
     pub fn new() -> Self {
-        Self {
-            bpc: BPC::new(),
-            num_samples: 0
-        }
+        let inner = Arc::new(Mutex::new(BPCWaveInner::new()));
+        thread::spawn({
+            let inner = inner.clone();
+            move || loop {
+                {
+                    let now = cst();
+                    let delta = 1_000_000 - now.timestamp_subsec_micros();
+                    thread::sleep(Duration::from_micros(delta as u64));
+                }
+
+                let now = cst();
+                inner.lock().unwrap().update(now);
+            }
+        });
+        Self { inner }
     }
 }
 
@@ -193,15 +256,7 @@ impl Iterator for BPCWave {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        let fc = BPC_FREQ / 5; // normally speakers only produce sound frequency under 20khz
-
-        self.num_samples = self.num_samples.wrapping_add(1);
-        let value = 2.0 * PI * fc as f32 * self.num_samples as f32 / SAMPLE_RATE as f32;
-        if self.bpc.pulse() {
-            Some(value.sin().signum())
-        } else {
-            Some(0.)
-        }
+        self.inner.lock().unwrap().next()
     }
 }
 

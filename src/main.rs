@@ -1,13 +1,14 @@
 mod bpc;
 
+
 use std::sync::mpsc::channel;
 
+
+
+use anyhow::{Context, Result};
 use bpc::BPCWave;
-use rodio::{OutputStream, source::Source, Sink};
-use anyhow::{Result, Context};
 use ctrlc;
-
-
+use rodio::{OutputStream, Sink};
 
 fn main() -> Result<()> {
     let (tx, rx) = channel();
@@ -15,16 +16,14 @@ fn main() -> Result<()> {
 
     let (_stream, stream_handle) = OutputStream::try_default()
         .with_context(|| format!("unable to open default output device"))?;
-    let sink = Sink::try_new(&stream_handle)
-        .with_context(|| format!("failed to create sink"))?;
+    let sink = Sink::try_new(&stream_handle).with_context(|| format!("failed to create sink"))?;
 
     let source = BPCWave::new();
-    sink.append(source.amplify(1.));
+    sink.append(source);
 
     sink.play();
     rx.recv()?;
-    sink.clear();
+    sink.stop();
 
     Ok(())
 }
-
